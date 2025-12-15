@@ -1,69 +1,40 @@
 package main
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/mikefarah/yq/v4/pkg/yqlib"
 	log "gopkg.in/op/go-logging.v1"
 )
 
-func main() {
-	fmt.Println("Script started")
+const semVerPattern = `^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$`
 
+var semVerRegex = regexp.MustCompile(semVerPattern)
+
+func isValidSemVer(tag string) bool {
+	if !semVerRegex.MatchString(tag) {
+		return false
+	}
+	return true
+}
+
+func getTag(imgName string) (string, error) {
+	nameSplit := strings.SplitN(imgName, ":", 2)
+	fmt.Println(len(nameSplit))
+	if len(nameSplit) < 2 {
+		return "", errors.New("you don't have tags in the image name")
+	}
+	return nameSplit[1], nil
+}
+
+func analyzeFile(fullFilePath string) {
 	log.SetLevel(log.WARNING, "yq-lib")
-
-	yamlMultiContent := `
-# Document 0: Service
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: my-service
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: nginx-deployment
-  labels:
-    app: nginx
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: nginx
-  template:
-    metadata:
-      labels:
-        app: nginx
-    spec:
-      containers:
-      - name: nginx
-        image: nginx:1.14.2
-        ports:
-        - containerPort: 80
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: nginx-deployment
-  labels:
-    app: nginx
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: nginx
-  template:
-    metadata:
-      labels:
-        app: nginx
-    spec:
-      containers:
-      - name: nginx
-        image: nginx:1.14.2
-        ports:
-        - containerPort: 80
-`
 
 	myCustPrefs := yqlib.YamlPreferences{
 		Indent:                      2,
@@ -75,17 +46,58 @@ spec:
 		FixMergeAnchorToSpec:        false,
 	}
 
-	//  myPrefs := yqlib.NewDefaultYamlPreferences()
+	data, err := os.ReadFile(fullFilePath)
+	if err != nil {
+		panic(err)
+	}
+	// fmt.Print(string(data))
 	expression := "select(.kind == \"Deployment\") .spec.template.spec.containers.[].image"
 	evaluator := yqlib.NewStringEvaluator()
 	myEncoder := yqlib.NewYamlEncoder(myCustPrefs)
 	myDecoder := yqlib.NewYamlDecoder(myCustPrefs)
-	result, err := evaluator.Evaluate(expression, yamlMultiContent, myEncoder, myDecoder)
+	result, err := evaluator.Evaluate(expression, string(data), myEncoder, myDecoder)
 	if err != nil {
 		panic(err)
 	}
 	if len(result) > 0 {
-		fmt.Println("image:", result)
+		if len(result) > 1 {
+			scanner := bufio.NewScanner(strings.NewReader(result))
+			for scanner.Scan() {
+				fmt.Println("image:", scanner.Text())
+				t, err := getTag(scanner.Text())
+				if err != nil {
+					panic(err)
+				}
+				fmt.Printf("Tag: %v\n", t)
+				fmt.Printf("Is the Tag semver? : %v\n", isValidSemVer(t))
+			}
+		} else {
+			fmt.Println("image:", result)
+		}
 	}
+}
+
+func getYamlFiles(dirPath string) ([]string, error) {
+	yamlFiles, err := filepath.Glob(filepath.Join(dirPath, "*.yaml"))
+	if err != nil {
+		return nil, err
+	}
+	return yamlFiles, nil
+}
+
+func main() {
+	fmt.Println("Script started")
+
+	analyzeFile("./manifests/some-deployment.yaml")
+
+	yfs, err := getYamlFiles("./manifests/")
+	if err != nil {
+		panic(err)
+	}
+	for _, yf := range yfs {
+		fmt.Println(yf)
+		analyzeFile(yf)
+	}
+
 	fmt.Println("Script ended")
 }
